@@ -18,7 +18,10 @@ type GeneratorOptions struct {
 	LibraryPath string
 	// CatalogName is the name of the catalog.
 	CatalogName string
-	// CatalogVersion is the version of the catalog.
+	// CatalogVersion is the producer-owned content version of the catalog
+	// (metadata.catalogVersion). It is optional and free-form; it does NOT
+	// control the schema version, which is owned by the implementation
+	// (SchemaAPIVersion).
 	CatalogVersion string
 	// Repository is the repository URL.
 	Repository string
@@ -49,13 +52,16 @@ func GenerateCatalog(opts *GeneratorOptions) (*PolicyCatalog, error) {
 	}
 
 	catalog := &PolicyCatalog{
-		APIVersion: "gator.gatekeeper.sh/v1alpha1",
-		Kind:       "PolicyCatalog",
+		// The schema version is owned by the implementation and cannot be
+		// overridden by producers, so a generated catalog can never declare a
+		// schema version different from the fields it actually emits.
+		APIVersion: SchemaAPIVersion,
+		Kind:       Kind,
 		Metadata: CatalogMetadata{
-			Name:       opts.CatalogName,
-			Version:    opts.CatalogVersion,
-			UpdatedAt:  time.Now().UTC(),
-			Repository: opts.Repository,
+			Name:           opts.CatalogName,
+			CatalogVersion: opts.CatalogVersion,
+			UpdatedAt:      time.Now().UTC(),
+			Repository:     opts.Repository,
 		},
 		Bundles:  []Bundle{},
 		Policies: []Policy{},
@@ -398,15 +404,17 @@ func ValidateCatalogSchema(catalog *PolicyCatalog) error {
 	if catalog.APIVersion == "" {
 		return fmt.Errorf("missing apiVersion")
 	}
-	if catalog.Kind != "PolicyCatalog" {
-		return fmt.Errorf("invalid kind: expected PolicyCatalog, got %s", catalog.Kind)
+	if !IsSupportedAPIVersion(catalog.APIVersion) {
+		return &UnsupportedAPIVersionError{APIVersion: catalog.APIVersion}
+	}
+	if catalog.Kind != Kind {
+		return fmt.Errorf("invalid kind: expected %s, got %s", Kind, catalog.Kind)
 	}
 	if catalog.Metadata.Name == "" {
 		return fmt.Errorf("missing metadata.name")
 	}
-	if catalog.Metadata.Version == "" {
-		return fmt.Errorf("missing metadata.version")
-	}
+	// metadata.catalogVersion is producer-owned and optional; it is NOT the
+	// schema version (that is apiVersion), so it is not required here.
 
 	// Validate policies
 	policyNames := make(map[string]bool)

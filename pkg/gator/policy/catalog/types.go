@@ -2,9 +2,45 @@ package catalog
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
+
+// Kind is the required value of a catalog's kind field.
+const Kind = "PolicyCatalog"
+
+// SchemaAPIVersion is the catalog schema/API version emitted by this build's
+// generator. It is the sole schema discriminator for a catalog and is owned by
+// the implementation: catalog producers cannot override it. Increment (introduce
+// a new group version) whenever fields are added or removed from the schema.
+const SchemaAPIVersion = "gator.gatekeeper.sh/v1alpha1"
+
+// supportedAPIVersions is the set of catalog schema/API versions this build can
+// load. A catalog declaring an apiVersion outside this set is rejected so that
+// clients never silently ignore fields from a newer, unknown schema.
+var supportedAPIVersions = map[string]struct{}{
+	SchemaAPIVersion: {},
+}
+
+// IsSupportedAPIVersion reports whether the given catalog apiVersion is a schema
+// version this build understands.
+func IsSupportedAPIVersion(apiVersion string) bool {
+	_, ok := supportedAPIVersions[apiVersion]
+	return ok
+}
+
+// SupportedAPIVersions returns the sorted list of catalog schema/API versions
+// this build can load. Used to build actionable error messages.
+func SupportedAPIVersions() []string {
+	versions := make([]string, 0, len(supportedAPIVersions))
+	for v := range supportedAPIVersions {
+		versions = append(versions, v)
+	}
+	sort.Strings(versions)
+	return versions
+}
 
 // PolicyCatalog represents the root catalog structure for policy discovery.
 type PolicyCatalog struct {
@@ -23,10 +59,46 @@ type PolicyCatalog struct {
 
 // CatalogMetadata contains metadata about the catalog itself.
 type CatalogMetadata struct {
-	Name       string    `json:"name" yaml:"name"`
-	Version    string    `json:"version" yaml:"version"`
+	// Name is the catalog identifier.
+	Name string `json:"name" yaml:"name"`
+	// CatalogVersion is the producer-owned version of this catalog's *contents*
+	// (which policies/bundles it publishes). It is distinct from the schema
+	// version (apiVersion) and is free-form: public and private catalog
+	// producers may version their catalogs however they like.
+	CatalogVersion string `json:"catalogVersion,omitempty" yaml:"catalogVersion,omitempty"`
+	// Version is the deprecated catalog-version field. Historically it doubled as
+	// the schema version; that role now belongs solely to apiVersion. It is
+	// retained only so legacy catalogs still parse and their value can be read
+	// back through CatalogVersionString. The generator no longer emits it.
+	//
+	// Deprecated: use CatalogVersion for content versioning and apiVersion for
+	// the schema version.
+	Version    string    `json:"version,omitempty" yaml:"version,omitempty"`
 	UpdatedAt  time.Time `json:"updatedAt" yaml:"updatedAt"`
 	Repository string    `json:"repository" yaml:"repository"`
+}
+
+// CatalogVersionString returns the producer-owned catalog content version. For
+// legacy catalogs that only populate the deprecated metadata.version field, that
+// value is returned so existing catalogs keep displaying a version.
+func (m CatalogMetadata) CatalogVersionString() string {
+	if m.CatalogVersion != "" {
+		return m.CatalogVersion
+	}
+	return m.Version
+}
+
+// UnsupportedAPIVersionError is returned when a catalog declares a schema/API
+// version this build cannot load.
+type UnsupportedAPIVersionError struct {
+	APIVersion string
+}
+
+func (e *UnsupportedAPIVersionError) Error() string {
+	return fmt.Sprintf(
+		"unsupported catalog apiVersion %q: this build of gator supports %s; upgrade gator or regenerate the catalog with a supported version",
+		e.APIVersion, strings.Join(SupportedAPIVersions(), ", "),
+	)
 }
 
 // Bundle represents a curated set of policies with pre-configured constraints.

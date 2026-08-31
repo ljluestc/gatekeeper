@@ -1,9 +1,13 @@
 package policy
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/open-policy-agent/gatekeeper/v3/pkg/gator/policy/catalog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInstallCommand_ValidationErrors(t *testing.T) {
@@ -165,4 +169,98 @@ func TestGenerateCatalogCommand_InvalidPath(t *testing.T) {
 	err := cmd.Execute()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "library")
+}
+
+// writeTestLibrary creates a minimal gatekeeper-library layout with a single
+// ConstraintTemplate and returns the library root path.
+func writeTestLibrary(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	policyDir := filepath.Join(root, "library", "general", "testpolicy")
+	require.NoError(t, os.MkdirAll(policyDir, 0o755))
+	template := `apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8stestpolicy
+  annotations:
+    metadata.gatekeeper.sh/version: "1.0.0"
+    description: "A test policy"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(policyDir, "template.yaml"), []byte(template), 0o600))
+	return root
+}
+
+// TestGenerateCatalogCommand_CatalogVersion verifies --catalog-version populates
+// metadata.catalogVersion, that the schema apiVersion is implementation-owned,
+// and that the deprecated metadata.version schema field is not emitted.
+func TestGenerateCatalogCommand_CatalogVersion(t *testing.T) {
+	root := writeTestLibrary(t)
+	outPath := filepath.Join(t.TempDir(), "catalog.yaml")
+
+	cmd := newGenerateCatalogCommand()
+	cmd.SetArgs([]string{
+		"--library-path=" + root,
+		"--output=" + outPath,
+		"--catalog-version=2026.08.29",
+	})
+	require.NoError(t, cmd.Execute())
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	cat, err := catalog.ParseCatalog(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, catalog.SchemaAPIVersion, cat.APIVersion)
+	assert.Equal(t, "2026.08.29", cat.Metadata.CatalogVersion)
+	assert.Empty(t, cat.Metadata.Version, "deprecated metadata.version must not be emitted")
+	assert.Equal(t, "2026.08.29", cat.Metadata.CatalogVersionString())
+}
+
+// TestGenerateCatalogCommand_DeprecatedVersionAlias verifies the deprecated
+// --version flag now feeds metadata.catalogVersion instead of overriding the
+// schema version.
+func TestGenerateCatalogCommand_DeprecatedVersionAlias(t *testing.T) {
+	root := writeTestLibrary(t)
+	outPath := filepath.Join(t.TempDir(), "catalog.yaml")
+
+	cmd := newGenerateCatalogCommand()
+	cmd.SetArgs([]string{
+		"--library-path=" + root,
+		"--output=" + outPath,
+		"--version=legacy-1.2.3",
+	})
+	require.NoError(t, cmd.Execute())
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	cat, err := catalog.ParseCatalog(data)
+	require.NoError(t, err)
+
+	// The value lands in the content version, and the schema version is
+	// unaffected (still implementation-owned).
+	assert.Equal(t, catalog.SchemaAPIVersion, cat.APIVersion)
+	assert.Equal(t, "legacy-1.2.3", cat.Metadata.CatalogVersion)
+}
+
+// TestGenerateCatalogCommand_DefaultNoCatalogVersion verifies that, with no
+// version flag, the generated catalog omits catalogVersion and still validates.
+func TestGenerateCatalogCommand_DefaultNoCatalogVersion(t *testing.T) {
+	root := writeTestLibrary(t)
+	outPath := filepath.Join(t.TempDir(), "catalog.yaml")
+
+	cmd := newGenerateCatalogCommand()
+	cmd.SetArgs([]string{
+		"--library-path=" + root,
+		"--output=" + outPath,
+	})
+	require.NoError(t, cmd.Execute())
+
+	data, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	cat, err := catalog.ParseCatalog(data)
+	require.NoError(t, err)
+
+	assert.Empty(t, cat.Metadata.CatalogVersion)
+	assert.Empty(t, cat.Metadata.Version)
+	require.NoError(t, catalog.ValidateCatalogSchema(cat))
 }

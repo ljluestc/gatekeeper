@@ -87,8 +87,18 @@ spec:
 		t.Errorf("Expected catalog name 'test-catalog', got '%s'", catalog.Metadata.Name)
 	}
 
-	if catalog.Metadata.Version != testVersion {
-		t.Errorf("Expected catalog version '%s', got '%s'", testVersion, catalog.Metadata.Version)
+	if catalog.Metadata.CatalogVersion != testVersion {
+		t.Errorf("Expected catalog content version '%s', got '%s'", testVersion, catalog.Metadata.CatalogVersion)
+	}
+
+	// The deprecated metadata.version schema field is no longer emitted.
+	if catalog.Metadata.Version != "" {
+		t.Errorf("Expected deprecated metadata.version to be empty, got '%s'", catalog.Metadata.Version)
+	}
+
+	// The schema version is owned by the implementation, not the producer.
+	if catalog.APIVersion != SchemaAPIVersion {
+		t.Errorf("Expected apiVersion '%s', got '%s'", SchemaAPIVersion, catalog.APIVersion)
 	}
 
 	if catalog.Metadata.Repository != "https://example.com/test-catalog" {
@@ -296,9 +306,22 @@ func TestValidateCatalogSchema(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "missing version",
+			// catalogVersion is producer-owned and optional; its absence is valid.
+			name: "missing catalogVersion is allowed",
 			catalog: &PolicyCatalog{
 				APIVersion: "gator.gatekeeper.sh/v1alpha1",
+				Kind:       "PolicyCatalog",
+				Metadata: CatalogMetadata{
+					Name:       "test",
+					Repository: "https://example.com",
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "unsupported apiVersion",
+			catalog: &PolicyCatalog{
+				APIVersion: "gator.gatekeeper.sh/v99",
 				Kind:       "PolicyCatalog",
 				Metadata: CatalogMetadata{
 					Name:       "test",

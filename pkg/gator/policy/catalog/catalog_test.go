@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -85,6 +86,66 @@ metadata:
 `,
 			wantErr:     true,
 			errContains: "missing metadata.name",
+		},
+		{
+			name: "unsupported apiVersion is rejected",
+			input: `
+apiVersion: gator.gatekeeper.sh/v2
+kind: PolicyCatalog
+metadata:
+  name: future-catalog
+`,
+			wantErr:     true,
+			errContains: "unsupported catalog apiVersion",
+		},
+		{
+			name: "wrong group apiVersion is rejected",
+			input: `
+apiVersion: v1
+kind: PolicyCatalog
+metadata:
+  name: not-a-catalog
+`,
+			wantErr:     true,
+			errContains: "unsupported catalog apiVersion",
+		},
+		{
+			// Legacy catalogs that only carry the deprecated metadata.version
+			// field must still load: apiVersion is what gates acceptance.
+			name: "legacy catalog with only metadata.version loads",
+			input: `
+apiVersion: gator.gatekeeper.sh/v1alpha1
+kind: PolicyCatalog
+metadata:
+  name: legacy-catalog
+  version: v1.0.0
+policies: []
+`,
+			wantErr: false,
+			validate: func(t *testing.T, cat *PolicyCatalog) {
+				assert.Equal(t, "v1.0.0", cat.Metadata.Version)
+				assert.Empty(t, cat.Metadata.CatalogVersion)
+				// Falls back to the legacy field for display.
+				assert.Equal(t, "v1.0.0", cat.Metadata.CatalogVersionString())
+			},
+		},
+		{
+			name: "catalogVersion is read and preferred over legacy version",
+			input: `
+apiVersion: gator.gatekeeper.sh/v1alpha1
+kind: PolicyCatalog
+metadata:
+  name: versioned-catalog
+  catalogVersion: 2026.01.08
+  version: v1.0.0
+policies: []
+`,
+			wantErr: false,
+			validate: func(t *testing.T, cat *PolicyCatalog) {
+				assert.Equal(t, "2026.01.08", cat.Metadata.CatalogVersion)
+				// catalogVersion wins over the deprecated version field.
+				assert.Equal(t, "2026.01.08", cat.Metadata.CatalogVersionString())
+			},
 		},
 	}
 
@@ -211,7 +272,7 @@ func TestCache(t *testing.T) {
 
 	// Save catalog
 	catalogData := []byte(`
-apiVersion: gator.gatekeeper.sh/v1
+apiVersion: gator.gatekeeper.sh/v1alpha1
 kind: PolicyCatalog
 metadata:
   name: cached-test
@@ -271,7 +332,7 @@ metadata:
 
 	// Create catalog file
 	catalogContent := `
-apiVersion: gator.gatekeeper.sh/v1
+apiVersion: gator.gatekeeper.sh/v1alpha1
 kind: PolicyCatalog
 metadata:
   name: test
@@ -307,7 +368,7 @@ func TestLoadCatalog(t *testing.T) {
 	// Create temp catalog file
 	tmpDir := t.TempDir()
 	catalogContent := `
-apiVersion: gator.gatekeeper.sh/v1
+apiVersion: gator.gatekeeper.sh/v1alpha1
 kind: PolicyCatalog
 metadata:
   name: load-test
@@ -494,4 +555,64 @@ func TestHTTPFetcher_RejectsPathTraversalAbsoluteURL(t *testing.T) {
 	_, err := fetcher.FetchContent(context.Background(), "https://evil.com/../../../etc/passwd")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path traversal")
+}
+
+// TestIsSupportedAPIVersion verifies the schema/API version discriminator.
+func TestIsSupportedAPIVersion(t *testing.T) {
+	assert.True(t, IsSupportedAPIVersion(SchemaAPIVersion))
+	assert.True(t, IsSupportedAPIVersion("gator.gatekeeper.sh/v1alpha1"))
+	assert.False(t, IsSupportedAPIVersion("gator.gatekeeper.sh/v1"))
+	assert.False(t, IsSupportedAPIVersion("gator.gatekeeper.sh/v1beta1"))
+	assert.False(t, IsSupportedAPIVersion(""))
+	assert.False(t, IsSupportedAPIVersion("v1"))
+}
+
+// TestSupportedAPIVersions verifies the supported-version list is non-empty,
+// sorted, and includes the current schema version.
+func TestSupportedAPIVersions(t *testing.T) {
+	versions := SupportedAPIVersions()
+	require.NotEmpty(t, versions)
+	assert.Contains(t, versions, SchemaAPIVersion)
+	assert.True(t, sort.StringsAreSorted(versions))
+}
+
+// TestUnsupportedAPIVersionError verifies the error is actionable: it names the
+// offending version and the supported versions.
+func TestUnsupportedAPIVersionError(t *testing.T) {
+	err := &UnsupportedAPIVersionError{APIVersion: "gator.gatekeeper.sh/v2"}
+	msg := err.Error()
+	assert.Contains(t, msg, "gator.gatekeeper.sh/v2")
+	assert.Contains(t, msg, SchemaAPIVersion)
+
+	// ParseCatalog should surface this typed error so callers can detect it.
+	_, perr := ParseCatalog([]byte(`
+apiVersion: gator.gatekeeper.sh/v2
+kind: PolicyCatalog
+metadata:
+  name: future
+`))
+	require.Error(t, perr)
+	var uErr *UnsupportedAPIVersionError
+	assert.ErrorAs(t, perr, &uErr)
+	assert.Equal(t, "gator.gatekeeper.sh/v2", uErr.APIVersion)
+}
+
+// TestCatalogVersionString verifies the content-version accessor prefers the new
+// catalogVersion field and falls back to the deprecated version field.
+func TestCatalogVersionString(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata CatalogMetadata
+		want     string
+	}{
+		{"catalogVersion set", CatalogMetadata{CatalogVersion: "2026.01.08"}, "2026.01.08"},
+		{"legacy version only", CatalogMetadata{Version: "v1.0.0"}, "v1.0.0"},
+		{"catalogVersion preferred", CatalogMetadata{CatalogVersion: "2026.01.08", Version: "v1.0.0"}, "2026.01.08"},
+		{"neither set", CatalogMetadata{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.metadata.CatalogVersionString())
+		})
+	}
 }

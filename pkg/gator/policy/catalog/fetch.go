@@ -270,12 +270,17 @@ func ParseCatalog(data []byte) (*PolicyCatalog, error) {
 		return nil, fmt.Errorf("parsing catalog YAML: %w", err)
 	}
 
-	// Validate required fields
+	// Validate required fields. apiVersion is the sole schema discriminator, so
+	// loading explicitly accepts supported versions and rejects unknown ones —
+	// clients must never silently ignore fields from a newer, unknown schema.
 	if catalog.APIVersion == "" {
 		return nil, fmt.Errorf("catalog missing apiVersion")
 	}
-	if catalog.Kind != "PolicyCatalog" {
-		return nil, fmt.Errorf("invalid catalog kind: expected PolicyCatalog, got %s", catalog.Kind)
+	if !IsSupportedAPIVersion(catalog.APIVersion) {
+		return nil, &UnsupportedAPIVersionError{APIVersion: catalog.APIVersion}
+	}
+	if catalog.Kind != Kind {
+		return nil, fmt.Errorf("invalid catalog kind: expected %s, got %s", Kind, catalog.Kind)
 	}
 	if catalog.Metadata.Name == "" {
 		return nil, fmt.Errorf("catalog missing metadata.name")

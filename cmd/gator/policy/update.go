@@ -80,7 +80,7 @@ func runUpdate(cmd *cobra.Command, _ []string) error {
 
 	// Build update result
 	result := &output.UpdateResult{
-		CatalogVersion: cat.Metadata.Version,
+		CatalogVersion: cat.Metadata.CatalogVersionString(),
 		PolicyCount:    len(cat.Policies),
 		BundleCount:    len(cat.Bundles),
 	}

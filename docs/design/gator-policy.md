@@ -61,7 +61,8 @@ gator policy
     --library-path <path>       # Path to library repository (default: ".")
     --output, -o <file>         # Output file path (default: "catalog.yaml")
     --name <name>               # Catalog name (default: "gatekeeper-library")
-    --version <ver>             # Catalog version (default: "v1.0.0")
+    --catalog-version <ver>     # Producer-owned content version (metadata.catalogVersion); optional
+    --version <ver>             # Deprecated: alias for --catalog-version
   --base-url <url>            # Convert local template/constraint paths to URLs
     --bundles <file>            # Bundles definition file (optional)
     --validate                  # Validate generated catalog (default: true)
@@ -115,11 +116,11 @@ The policy catalog is a YAML file that provides metadata about available policie
 #### Schema Definition
 
 ```yaml
-apiVersion: gator.gatekeeper.sh/v1alpha1
+apiVersion: gator.gatekeeper.sh/v1alpha1   # schema version (implementation-owned)
 kind: PolicyCatalog
 metadata:
   name: gatekeeper-library
-  version: v1.0.0
+  catalogVersion: "2026.01.08"              # content version (producer-owned, optional)
   updatedAt: "2026-01-08T00:00:00Z"
   repository: https://github.com/open-policy-agent/gatekeeper-library
 
@@ -167,9 +168,12 @@ policies:
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | Yes | Catalog identifier |
-| `version` | string | Yes | Catalog schema version (semver) |
+| `catalogVersion` | string | No | Producer-owned version of the catalog **contents** (free-form). Distinct from the schema version, which is `apiVersion`. |
+| `version` | string | No | **Deprecated.** Legacy field that historically doubled as the schema version. Retained only so existing catalogs still load; the generator no longer emits it. Use `catalogVersion` for content versioning and `apiVersion` for the schema version. |
 | `updatedAt` | string | Yes | ISO 8601 timestamp |
 | `repository` | string | Yes | Source repository URL |
+
+> The catalog schema version is carried **only** by the top-level `apiVersion` field (e.g. `gator.gatekeeper.sh/v1alpha1`). It is owned by the implementation and cannot be overridden by producers, so a generated catalog can never declare a schema version that disagrees with the fields it actually contains.
 
 ##### Bundle
 
@@ -209,11 +213,20 @@ The `templatePath`, `bundleConstraints`, and `sampleConstraintPath` fields are *
 
 #### Version Terminology
 
-| Term | Field | Description | Format |
-|------|-------|-------------|--------|
-| **Catalog Schema Version** | `metadata.version` | Format/contract version of the catalog structure itself. Increment when adding/removing fields. | semver (e.g., `v1.0.0`) |
-| **Catalog Content Version** | `metadata.updatedAt` | Timestamp indicating when this catalog snapshot was generated from the library. | ISO 8601 timestamp |
-| **Policy Version** | `policies[].version` | Version of the individual ConstraintTemplate/Constraint. Tracks policy logic changes. | semver (e.g., `v1.2.0`) |
+| Term | Field | Owner | Description | Format |
+|------|-------|-------|-------------|--------|
+| **Catalog Schema / API Version** | `apiVersion` | Implementation | The single source of truth for the catalog structure/contract. Introduce a new group version (e.g. `v1alpha2`) when fields are added or removed. Producers cannot override it. | Kubernetes group/version (e.g., `gator.gatekeeper.sh/v1alpha1`) |
+| **Catalog Content Version** | `metadata.catalogVersion` | Producer | Optional, free-form identifier for the *contents* of a particular (public or private) catalog. Does not affect schema decoding. | free-form (e.g., `v1.2.0`, `2026.01.08`) |
+| **Catalog Snapshot Timestamp** | `metadata.updatedAt` | Implementation | Timestamp indicating when this catalog snapshot was generated from the library. | ISO 8601 timestamp |
+| **Policy Version** | `policies[].version` | Library | Version of the individual ConstraintTemplate/Constraint. Tracks policy logic changes. | semver (e.g., `v1.2.0`) |
+
+> **Deprecated:** `metadata.version` previously appeared as the "catalog schema version" and competed with `apiVersion`. That role is removed. The field is still parsed for backward compatibility (and read back as the content version when `catalogVersion` is absent), but the generator no longer emits it.
+
+#### Schema Version Enforcement
+
+- The generator always emits the implementation's current `apiVersion`; there is no flag to override it. This guarantees a generated catalog can never contain fields from one schema while declaring another.
+- Loaders (`ParseCatalog`) **accept only known `apiVersion` values** and reject unknown ones with an actionable error (naming the offending version and the supported versions). This prevents older clients from silently ignoring safety-relevant fields from a newer schema.
+- To support multiple schema versions simultaneously, add the new `apiVersion` to the supported set and perform version-specific decoding/conversion.
 
 #### Version Behavior
 
@@ -225,6 +238,16 @@ If you need a specific older version of a policy, you must:
 1. Check out the gatekeeper-library at the desired git tag/commit
 2. Use `gator policy generate-catalog` to create a catalog from that version
 3. Configure `GATOR_CATALOG_URL` to point to your custom catalog
+
+#### Migration & Compatibility
+
+**Existing `v1alpha1` catalogs.** The current public catalog and all previously generated catalogs use `apiVersion: gator.gatekeeper.sh/v1alpha1`. That version remains supported, so existing catalogs continue to load unchanged. A catalog that carries the deprecated `metadata.version` field (but no `catalogVersion`) still loads; its `version` value is surfaced as the content version for display.
+
+**Regenerating a catalog.** Running the current `gator policy generate-catalog` over an existing library produces a `v1alpha1` catalog that omits `metadata.version` and, unless `--catalog-version` is supplied, omits `metadata.catalogVersion`. This is schema-compatible with existing clients.
+
+**Private catalog producers.** Producers who previously used `--version` to stamp their catalog should switch to `--catalog-version`; the old flag is a deprecated alias that now writes `metadata.catalogVersion` (it no longer changes the schema version). Private catalogs continue to declare the implementation-owned `apiVersion`.
+
+**Introducing a new schema version (future).** Because released clients reject unknown `apiVersion` values, a new schema (e.g. `v1alpha2`) that adds safety-relevant fields must be published on a **separate, versioned catalog path** while the existing path keeps serving `v1alpha1` for older clients. Older, already-released clients that predate this enforcement do not validate `apiVersion`; they will still ignore unknown fields, which is why new schemas are served from a distinct path rather than by bumping the existing catalog in place.
 
 ### Configuration
 

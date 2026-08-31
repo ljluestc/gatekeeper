@@ -18,8 +18,8 @@ gator policy generate-catalog --library-path=. --output=catalog.yaml
 # Generate with bundles file
 gator policy generate-catalog --library-path=. --bundles=bundles.yaml
 
-# Generate with custom version
-gator policy generate-catalog --library-path=. --version=v1.2.0
+# Generate with a custom catalog content version (for private/public catalog producers)
+gator policy generate-catalog --library-path=. --catalog-version=v1.2.0
 
 # Generate with URLs instead of local paths (for publishing)
 gator policy generate-catalog --library-path=. --base-url=https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master`
@@ -56,7 +56,18 @@ func newGenerateCatalogCommand() *cobra.Command {
 	cmd.Flags().StringVar(&libraryPath, "library-path", ".", "Path to the gatekeeper-library repository root")
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "catalog.yaml", "Output path for the generated catalog")
 	cmd.Flags().StringVar(&catalogName, "name", "gatekeeper-library", "Name of the catalog")
-	cmd.Flags().StringVar(&catalogVersion, "version", "v1.0.0", "Version of the catalog")
+	// --catalog-version sets metadata.catalogVersion: the producer-owned content
+	// version of the catalog. It does NOT set the schema version, which is owned
+	// by the implementation (emitted as apiVersion) and cannot be overridden.
+	cmd.Flags().StringVar(&catalogVersion, "catalog-version", "", "Producer-owned content version for this catalog (metadata.catalogVersion); optional")
+	// --version is the deprecated alias for --catalog-version. It historically
+	// (and misleadingly) doubled as the schema version override; that ability is
+	// removed. It now only feeds metadata.catalogVersion so existing invocations
+	// keep working during migration.
+	cmd.Flags().StringVar(&catalogVersion, "version", "", "Deprecated: use --catalog-version")
+	if err := cmd.Flags().MarkDeprecated("version", "use --catalog-version; the schema version is now owned by the implementation and cannot be overridden"); err != nil {
+		panic(err)
+	}
 	cmd.Flags().StringVar(&bundlesFile, "bundles", "", "Path to bundles definition file (optional)")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "Base URL for template/constraint paths (e.g., https://raw.githubusercontent.com/open-policy-agent/gatekeeper-library/master)")
 	cmd.Flags().BoolVar(&validate, "validate", true, "Validate the generated catalog")
